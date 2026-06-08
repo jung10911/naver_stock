@@ -58,7 +58,7 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
     if not stock_input.strip():
         st.warning("⚠️ 최소 하나 이상의 종목명을 입력해 주세요.")
     else:
-        # 입력 데이터 정제 (중복 종목이 있을 수 있으므로 순서 유지를 위해 리스트 구조 유지)
+        # 입력 데이터 정제
         target_stocks = [name.strip() for name in stock_input.split('\n') if name.strip()]
         
         with st.spinner("⏳ 네이버 금융 실시간 시세 판을 분석 중입니다..."):
@@ -79,29 +79,26 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                 available_columns = [col for col in target_columns if col in filtered_result.columns]
                 final_df = filtered_result[available_columns].copy()
                 
-                # [전처리] 돈 단위 변환 로직 (원, 억 원)
+                # [수정] 글자 단위를 제외하고 순수 숫자 형식에 천 단위 콤마(,)만 추가하는 전처리
                 if '현재가' in final_df.columns:
                     final_df['현재가'] = pd.to_numeric(final_df['현재가'].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
-                    final_df['현재가'] = final_df['현재가'].apply(lambda x: f"{x:,}원")
+                    final_df['현재가'] = final_df['현재가'].apply(lambda x: f"{x:,}")
                     
                 if '시가총액' in final_df.columns:
                     final_df['시가총액'] = pd.to_numeric(final_df['시가총액'].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
-                    final_df['시가총액'] = final_df['시가총액'].apply(lambda x: f"{x:,}억 원")
+                    final_df['시가총액'] = final_df['시가총액'].apply(lambda x: f"{x:,}")
                 
-                # 사용자가 입력했으나 네이버 상장판에서 매칭되지 않은 종목 보완 (예: 오타 등)
+                # 사용자가 입력했으나 네이버 상장판에서 매칭되지 않은 종목 보완
                 found_stocks = final_df['종목명'].tolist()
                 missing_stocks = [s for s in target_stocks if s not in found_stocks]
                 
                 if missing_stocks:
-                    missing_data = [{"종목명": missing, "현재가": "N/A (상장 미매칭)", "시가총액": "N/A"} for missing in missing_stocks]
+                    missing_data = [{"종목명": missing, "현재가": "N/A", "시가총액": "N/A"} for missing in missing_stocks]
                     final_df = pd.concat([final_df, pd.DataFrame(missing_data)], ignore_index=True)
 
-                # [핵심 변경] 사용자가 입력한 순서(target_stocks)대로 최종 결과 정렬하기
-                # 종목명 컬럼을 사용자가 입력한 순서의 인덱스 기준으로 카테고리화하여 정렬합니다.
+                # 사용자가 입력한 순서(target_stocks)대로 최종 결과 정렬
                 final_df['종목명'] = pd.Categorical(final_df['종목명'], categories=target_stocks, ordered=True)
                 final_df = final_df.sort_values('종목명').reset_index(drop=True)
-                
-                # 카테고리 타입을 일반 문자열로 다시 되돌려주기 (데이터프레임 출력 오류 방지)
                 final_df['종목명'] = final_df['종목명'].astype(str)
 
                 # 결과 출력
@@ -113,7 +110,7 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                 st.download_button(
                     label="📥 분석 결과 CSV 다운로드",
                     data=csv,
-                    file_name="naver_finance_ordered.csv",
+                    file_name="naver_finance_clean.csv",
                     mime='text/csv',
                 )
                 
