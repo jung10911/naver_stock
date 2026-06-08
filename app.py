@@ -79,7 +79,7 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                 available_columns = [col for col in target_columns if col in filtered_result.columns]
                 final_df = filtered_result[available_columns].copy()
                 
-                # [수정] 글자 단위를 제외하고 순수 숫자 형식에 천 단위 콤마(,)만 추가하는 전처리
+                # 글자 단위를 제외하고 순수 숫자 형식에 천 단위 콤마(,)만 추가하는 전처리
                 if '현재가' in final_df.columns:
                     final_df['현재가'] = pd.to_numeric(final_df['현재가'].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
                     final_df['현재가'] = final_df['현재가'].apply(lambda x: f"{x:,}")
@@ -88,12 +88,12 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                     final_df['시가총액'] = pd.to_numeric(final_df['시가총액'].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
                     final_df['시가총액'] = final_df['시가총액'].apply(lambda x: f"{x:,}")
                 
-                # 사용자가 입력했으나 네이버 상장판에서 매칭되지 않은 종목 보완
+                # [핵심 변경] 사용자가 입력했으나 네이버 상장판에서 매칭되지 않은 종목 보완 (N/A 대신 0으로 표시)
                 found_stocks = final_df['종목명'].tolist()
                 missing_stocks = [s for s in target_stocks if s not in found_stocks]
                 
                 if missing_stocks:
-                    missing_data = [{"종목명": missing, "현재가": "N/A", "시가총액": "N/A"} for missing in missing_stocks]
+                    missing_data = [{"종목명": missing, "현재가": "0", "시가총액": "0"} for missing in missing_stocks]
                     final_df = pd.concat([final_df, pd.DataFrame(missing_data)], ignore_index=True)
 
                 # 사용자가 입력한 순서(target_stocks)대로 최종 결과 정렬
