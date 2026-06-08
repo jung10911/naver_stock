@@ -1,147 +1,103 @@
 import streamlit as st
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
+import io
 import time
 
-# 1. 네이버 금융 검색창에서 종목명을 쳐서 코드를 추출하는 함수 (헤더 우회 처리 추가)
-def get_stock_code_naver(stock_name):
-    try:
-        # 네이버 금융 종목 검색 주소
-        url = f"https://finance.naver.com/search/searchList.naver?query={stock_name}"
-        
-        # [핵심] 네이버 차단을 뚫기 위한 정밀 브라우저 헤더 주입
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://finance.naver.com/'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code != 200:
-            return None
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 검색 결과 테이블에서 종목 코드 링크 찾기
-        # 네이버 금융 검색창에 이름을 검색했을 때 나오는 첫 번째 항목의 코드를 가져옴
-        search_result = soup.find('td', {'class': 'tit'})
-        if search_result:
-            a_tag = search_result.find('a')
-            if a_tag and 'code=' in a_tag['href']:
-                # href="...code=005930" 형태에서 6자리 코드만 분리
-                return a_tag['href'].split('code=')[-1]
-                
-        # 만약 바로 상세페이지로 리다이렉트 되거나 예외적인 경우에 대비한 2차 검색 체계
-        # (예: 삼성전자 같은 유명 종목은 바로 상세페이지로 튈 수 있음)
-        auto_url = f"https://ac.finance.naver.com/ac?q={stock_name}&q_enc=utf-8&st=1&frm=stock&r_format=json"
-        auto_resp = requests.get(auto_url, headers=headers, timeout=5)
-        if auto_resp.status_code == 200:
-            items = auto_resp.json().get('items', [])
-            if items and items[0]:
-                return items[0][0][0][1]
-                
-        return None
-    except Exception:
-        return None
+# 페이지 설정
+st.set_page_config(page_title="네이버 금융 대량 종목 조회기", layout="wide")
 
-# 2. 종목 코드를 기반으로 현재가와 시가총액을 크롤링하는 함수
-def get_stock_info_naver(stock_code):
-    url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+# [올려주신 핵심 로직 유지] 네이버 금융 전수조사 페이지를 안정적으로 긁어오는 함수
+def get_all_market_data(market_code):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://finance.naver.com/'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
     }
     
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code != 200:
-            return "접속 실패", "접속 실패"
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # A. 현재가 크롤링
-        today_div = soup.find('div', {'class': 'today'})
-        if today_div:
-            blind_span = today_div.find('span', {'class': 'blind'})
-            current_price = blind_span.text.strip() if blind_span else "N/A"
-        else:
-            current_price = "N/A"
-            
-        # B. 시가총액 크롤링
-        market_cap_table = soup.find('table', {'summary': '시가총액 정보'})
-        if market_cap_table:
-            td_elements = market_cap_table.find_all('td')
-            if td_elements:
-                market_cap = td_elements[0].text.replace('\n', '').replace('\t', '').strip()
-            else:
-                market_cap = "N/A"
-        else:
-            market_cap = "N/A"
-            
-        return current_price, market_cap
-        
-    except Exception:
-        return "오류 발생", "오류 발생"
+    base_url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={market_code}"
+    res = requests.get(base_url, headers=headers)
+    soup = BeautifulSoup(res.text, 'lxml')
+    
+    last_page_tag = soup.find('td', class_='pgRR')
+    last_page = int(last_page_tag.a['href'].split('page=')[-1]) if last_page_tag else 1
 
-# 3. Streamlit 대시보드 UI
-st.set_page_config(page_title="네이버 금융 대량 조회기", layout="wide")
-st.title("📈 주식 종목별 현재가 & 시가총액 실시간 조회기")
-st.caption("네이버 금융 웹 크롤링 우회 로직이 반영된 순수 네이버 기반 조회기입니다.")
+    all_dfs = []
+    
+    # URL에 시가총액(market_sum)이 기본 포함되도록 구성
+    for page in range(1, last_page + 1):
+        url = f"{base_url}&fieldIds=market_sum&page={page}"
+        res = requests.get(url, headers=headers)
+        
+        html_content = res.content.decode('euc-kr', errors='replace')
+        df_list = pd.read_html(io.StringIO(html_content))
+        df = df_list[1]
+        
+        df = df.dropna(subset=['종목명'])
+        df = df.loc[:, ~df.columns.str.contains('Unnamed')]
+        
+        all_dfs.append(df)
+        time.sleep(0.05) # 서버 부하 방지 micro delay
+        
+    final_df = pd.concat(all_dfs, ignore_index=True)
+    return final_df
+
+# 메인 UI
+st.title("📊 엑셀 붙여넣기 기반 현재가 & 시가총액 조회기")
+st.markdown("올려주신 네이버 금융 시세 전수조사 로직을 기반으로, **원하는 종목만 필터링**하여 시가총액과 현재가를 제공합니다.")
 
 st.markdown("---")
 
-# 엑셀 붙여넣기용 영역
+# 엑셀 대량 붙여넣기 영역
 stock_input = st.text_area(
-    "종목명 리스트를 입력하세요 (한 줄에 하나씩)",
-    height=250,
+    "조회할 종목명 리스트를 입력하세요 (엑셀에서 열을 통째로 복사해서 붙여넣어도 인지합니다)",
+    height=200,
     placeholder="삼성전자\nSK하이닉스\n카카오\nNAVER"
 )
 
-if st.button("🚀 데이터 추출 시작", type="primary"):
+if st.button("🚀 금융 정보 수집 시작", type="primary"):
     if not stock_input.strip():
         st.warning("⚠️ 최소 하나 이상의 종목명을 입력해 주세요.")
     else:
-        raw_stocks = stock_input.split('\n')
-        stock_names = [name.strip() for name in raw_stocks if name.strip()]
+        # 입력 데이터 정제
+        target_stocks = [name.strip() for name in stock_input.split('\n') if name.strip()]
         
-        results = []
-        progress_bar = st.progress(0)
-        st_text = st.empty()
-        
-        for idx, name in enumerate(stock_names):
-            st_text.text(f"⏳ 진행 중 ({idx+1}/{len(stock_names)}): '{name}' 검색 및 데이터 추출 중...")
-            
-            # 순수 네이버 크롤링으로 종목 코드 탐색
-            code = get_stock_code_naver(name)
-            
-            if code:
-                price, cap = get_stock_info_naver(code)
-                display_code = code
-            else:
-                display_code = "찾을 수 없음"
-                price, cap = "N/A", "N/A"
+        with st.spinner("⏳ 네이버 금융 실시간 시세 판을 분석 중입니다..."):
+            try:
+                # 안전하게 코스피(0), 코스닥(1) 데이터를 모두 가져와 병합합니다.
+                kospi_df = get_all_market_data("0")
+                kosdaq_df = get_all_market_data("1")
+                total_market_df = pd.concat([kospi_df, kosdaq_df], ignore_index=True)
                 
-            results.append({
-                "입력 종목명": name,
-                "종목 코드": display_code,
-                "현재가 (원)": price,
-                "시가총액": cap
-            })
-            
-            progress_bar.progress((idx + 1) / len(stock_names))
-            
-            # 너무 빠르면 네이버가 또 차단하므로 0.3초의 안전 마진을 둡니다.
-            time.sleep(0.3)
-            
-        st_text.text("✅ 모든 종목의 네이버 금융 정보 크롤링이 완료되었습니다!")
-        
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True)
-        
-        csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button(
-            label="📥 수집 결과 Excel(CSV) 파일 다운로드",
-            data=csv_data,
-            file_name="naver_finance_pure_results.csv",
-            mime="text/csv"
-        )
+                # 사용자가 입력한 종목명만 필터링하는 핵심 로직
+                # 데이터프레임 내 종목명 양 끝 공백 제거 후 비교
+                total_market_df['종목명'] = total_market_df['종목명'].astype(str).str.strip()
+                filtered_result = total_market_df[total_market_df['종목명'].isin(target_stocks)].reset_index(drop=True)
+                
+                # 핵심단어(요청 컬럼)만 추출 및 정리
+                target_columns = ['종목명', '현재가', '시가총액']
+                available_columns = [col for col in target_columns if col in filtered_result.columns]
+                final_df = filtered_result[available_columns]
+                
+                # 사용자가 입력했으나 네이버 상장판에서 매칭되지 않은 종목 보완 (예: 오타 등)
+                found_stocks = final_df['종목명'].tolist()
+                missing_stocks = [s for s in target_stocks if s not in found_stocks]
+                
+                if missing_stocks:
+                    missing_data = [{"종목명": missing, "현재가": "N/A (상장 미매칭)", "시가총액": "N/A"} for missing in missing_stocks]
+                    final_df = pd.concat([final_df, pd.DataFrame(missing_data)], ignore_index=True)
+
+                # 결과 출력
+                st.subheader(f"✅ 분석 결과 (총 {len(final_df)}개 종목 완료)")
+                st.dataframe(final_df, use_container_width=True)
+                
+                # 엑셀 다운로드 파일 빌드
+                csv = final_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button(
+                    label="📥 분석 결과 CSV 다운로드",
+                    data=csv,
+                    file_name="naver_finance_extracted.csv",
+                    mime='text/csv',
+                )
+                
+            except Exception as e:
+                st.error(f"실행 중 예외 오류가 발생했습니다: {e}")
