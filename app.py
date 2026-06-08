@@ -1,139 +1,137 @@
 import streamlit as st
 import requests
-import pandas as pd
 from bs4 import BeautifulSoup
-import re
+import pandas as pd
+import time
+import json
 
-# 헤더 설정 (네이버 크롤링 차단 방지)
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
-}
-
-def get_stock_info(stock_name):
-    """
-    종목명을 기반으로 네이버 증권에서 종목코드, 현재가, 시가총액을 크롤링합니다.
-    """
-    cleaned_name = stock_name.strip()
-    if not cleaned_name:
+# 1. 종목명으로 네이버 금융 종목 코드(6자리)를 찾는 함수
+def get_stock_code(stock_name):
+    try:
+        # 네이버 금융 종목 자동완성/검색 내부 API 활용
+        search_url = f"https://ac.finance.naver.com/ac?q={stock_name}&q_enc=utf-8&st=1&frm=stock&r_format=json"
+        response = requests.get(search_url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # 검색 결과 데이터 구조 파싱
+            items = data.get('items', [])
+            if items and items[0]:
+                # 첫 번째 매칭된 종목의 코드 추출 (예: [['삼성전자', '005930', ...]])
+                stock_code = items[0][0][0][1]
+                return stock_code
         return None
+    except Exception:
+        return None
+
+# 2. 종목 코드를 기반으로 네이버 금융에서 현재가와 시가총액을 크롤링하는 함수
+def get_stock_info(stock_code):
+    if not stock_code:
+        return "N/A", "N/A"
+        
+    url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     
     try:
-        # 1. 종목명 검색을 통해 종목코드(code) 추출
-        search_url = f"https://finance.naver.com/search/searchList.naver?query={cleaned_name}"
-        response = requests.get(search_url, headers=HEADERS)
-        response.raise_for_status()
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code != 200:
+            return "접속 실패", "접속 실패"
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 네이버 금융은 EUC-KR 또는 UTF-8 혼용이 있으므로 인코딩 처리
-        html = response.content.decode('euc-kr', errors='replace')
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # 검색 결과 테이블에서 첫 번째 종목 링크 찾기
-        stock_link = soup.select_one("td.tit > a")
-        
-        if not stock_link:
-            return {"종목명": cleaned_name, "종목코드": "N/A", "현재가": "N/A", "시가총액": "N/A", "상태": "종목 미검색"}
-        
-        # href에서 6자리 종목코드 추출
-        href = stock_link.get('href')
-        code = re.search(r'code=(\d{6})', href).group(1)
-        actual_name = stock_link.text.strip()
-        
-        # 2. 종목 메인 페이지에서 현재가 및 시가총액 크롤링
-        main_url = f"https://finance.naver.com/item/main.naver?code={code}"
-        main_response = requests.get(main_url, headers=HEADERS)
-        main_soup = BeautifulSoup(main_response.text, 'html.parser')
-        
-        # 현재가 추출
-        today_div = main_soup.select_one("div.today")
-        current_price = "N/A"
+        # A. 현재가 크롤링 (blind 태그 내부 텍스트 추출)
+        today_div = soup.find('div', {'class': 'today'})
         if today_div:
-            price_blind = today_div.select_one("p.no_today > em > span.blind")
-            if price_blind:
-                current_price = price_blind.text.strip()
+            blind_span = today_div.find('span', {'class': 'blind'})
+            current_price = blind_span.text.strip() if blind_span else "N/A"
+        else:
+            current_price = "N/A"
+            
+        # B. 시가총액 크롤링 (테이블 소스 파싱)
+        # 네이버 금융 '시가총액' 항목은 클래스가 'tab_con1'인 영역 안의 테이블에 위치함
+        market_cap_table = soup.find('table', {'summary': '시가총액 정보'})
+        if market_cap_table:
+            # 시가총액은 보통 첫 번째 tr의 td 안에 위치
+            td_elements = market_cap_table.find_all('td')
+            if td_elements:
+                market_cap = td_elements[0].text.replace('\n', '').replace('\t', '').strip()
+            else:
+                market_cap = "N/A"
+        else:
+            market_cap = "N/A"
+            
+        return current_price, market_cap
         
-        # 시가총액 추출 (포괄적인 상위 테이블에서 '시가총액' 텍스트가 있는 th 찾기)
-        market_cap = "N/A"
-        aside_table = main_soup.select_one("#aside .tab_con1")
-        if aside_table:
-            th_list = aside_table.select("trth")
-            for th in th_list:
-                if "시가총액" in th.text:
-                    td = th.find_next_sibling("td")
-                    if td:
-                        # 불필요한 공백 및 개행 제거
-                        market_cap = re.sub(r'\s+', ' ', td.text).strip()
-                        break
-                        
-        return {
-            "종목명": actual_name,
-            "종목코드": code,
-            "현재가": current_price,
-            "시가총액": market_cap,
-            "상태": "조회 성공"
-        }
-        
-    except Exception as e:
-        return {"종목명": cleaned_name, "종목코드": "N/A", "현재가": "N/A", "시가총액": "N/A", "상태": f"오류: {str(e)}"}
+    except Exception:
+        return "오류 발생", "오류 발생"
 
-# --- Streamlit UI 구성 ---
-st.set_page_config(page_title="네이버 금융 크롤러", layout="wide")
+# 3. Streamlit UI 페이지 레이아웃 설정
+st.set_page_config(page_title="네이버 금융 종목 정보 추출기", layout="wide")
+st.title("📈 주식 종목별 현재가 & 시가총액 실시간 조회기")
+st.caption("엑셀에서 종목명 리스트를 복사하여 아래에 붙여넣으면 네이버 금융 데이터를 기반으로 실시간 수집합니다.")
 
-st.title("📊 종목 정보 추출기 (현재가 & 시가총액)")
-st.caption("엑셀에서 종목명 열을 복사하여 아래에 붙여넣으세요. (줄바꿈 또는 쉼표 구분 지원)")
+st.markdown("---")
 
-# 텍스트 입력창 (엑셀 복사-붙여넣기 대응)
-input_data = st.text_area(
-    "종목명을 입력하세요:", 
-    placeholder="예시:\n삼성전자\nSK하이닉스\n현대차",
-    height=200
+# 엑셀 데이터 붙여넣기용 텍스트 영역
+stock_input = st.text_area(
+    "종목명 리스트를 입력하세요 (엑셀에서 열을 통째로 복사해서 붙여넣어도 인지합니다)",
+    height=250,
+    placeholder="삼성전자\nSK하이닉스\n카카오\nNAVER"
 )
 
-if st.button("데이터 추출 시작", type="primary"):
-    if not input_data.strip():
-        st.warning("종목명을 입력해주세요.")
+# 크롤링 가동 버튼
+if st.button("🚀 데이터 추출 시작", type="primary"):
+    if not stock_input.strip():
+        st.warning("⚠️ 최소 하나 이상의 종목명을 입력해 주세요.")
     else:
-        # 입력된 데이터를 줄바꿈 또는 쉼표 기준으로 분리 및 정제
-        raw_list = re.split(r'[\n,]', input_data)
-        stock_list = [item.strip() for item in raw_list if item.strip()]
+        # 입력된 텍스트 정제 및 엔터 단위 분하
+        raw_stocks = stock_input.split('\n')
+        stock_names = [name.strip() for name in raw_stocks if name.strip()]
         
-        if not stock_list:
-            st.error("유효한 종목명이 없습니다.")
-        else:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, name in enumerate(stock_names):
+            status_text.text(f"⏳ 진행 중 ({idx+1}/{len(stock_names)}): '{name}' 정보 조회 중...")
             
-            results = []
+            # 1단계: 종목명 매칭 코드 찾기
+            code = get_stock_code(name)
             
-            # 반복 크롤링 수행
-            for idx, name in enumerate(stock_list):
-                status_text.text(f"조회 중 ({idx+1}/{len(stock_list)}): {name}")
-                info = get_stock_info(name)
-                if info:
-                    results = info
-                progress_bar.progress((idx + 1) / len(stock_list))
-            
-            status_text.text("조회 완료!")
-            progress_bar.empty()
-            
-            # 결과 표 출력
-            df = pd.DataFrame(results)
-            st.subheader("📋 추출 결과")
-            st.dataframe(df, use_container_width=True)
-            
-            # 엑셀 다운로드 기능 제공
-            try:
-                # 메모리 상에 엑셀 파일 생성
-                from io import BytesIO
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='주가정보')
-                processed_data = output.getvalue()
+            # 2단계: 해당 코드로 현재가/시총 긁어오기
+            if code:
+                price, cap = get_stock_info(code)
+                display_code = code
+            else:
+                display_code = "찾을 수 없음"
+                price, cap = "N/A", "N/A"
                 
-                st.download_button(
-                    label="📥 엑셀 파일 (.xlsx) 다운로드",
-                    data=processed_data,
-                    file_name="네이버금융_추출결과.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            except Exception as e:
-                st.error(f"엑셀 파일 생성 중 오류가 발생했습니다: {e}")
+            results.append({
+                "입력 종목명": name,
+                "종목 코드": display_code,
+                "현재가 (원)": price,
+                "시가총액": cap
+            })
+            
+            # 진행바 상태 최신화
+            progress_bar.progress((idx + 1) / len(stock_names))
+            
+            # 네이버 서버 부하 차단 방지를 위한 최소한의 타임 슬립 (0.2초)
+            time.sleep(0.2)
+            
+        status_text.text("✅ 모든 종목의 금융 정보 크롤링이 완료되었습니다!")
+        
+        # 데이터프레임 시각화
+        df = pd.DataFrame(results)
+        st.dataframe(df, use_container_width=True)
+        
+        # 엑셀 호환 CSV 파일 다운로드 연동
+        csv_data = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+        st.download_button(
+            label="📥 수집 결과 Excel(CSV) 파일 다운로드",
+            data=csv_data,
+            file_name="naver_finance_results.csv",
+            mime="text/csv"
+        )
