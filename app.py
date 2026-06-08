@@ -43,7 +43,7 @@ def get_all_market_data(market_code):
 
 # 메인 UI
 st.title("📊 엑셀 붙여넣기 기반 현재가 & 시가총액 조회기")
-st.markdown("올려주신 네이버 금융 시세 전수조사 로직을 기반으로, **원하는 종목만 필터링**하여 시가총액과 현재가를 제공합니다.")
+st.markdown("올려주신 네이버 금융 시세 전수조사 로직을 기반으로, **내가 입력한 순서 그대로** 시가총액과 현재가를 정렬하여 제공합니다.")
 
 st.markdown("---")
 
@@ -58,7 +58,7 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
     if not stock_input.strip():
         st.warning("⚠️ 최소 하나 이상의 종목명을 입력해 주세요.")
     else:
-        # 입력 데이터 정제
+        # 입력 데이터 정제 (중복 종목이 있을 수 있으므로 순서 유지를 위해 리스트 구조 유지)
         target_stocks = [name.strip() for name in stock_input.split('\n') if name.strip()]
         
         with st.spinner("⏳ 네이버 금융 실시간 시세 판을 분석 중입니다..."):
@@ -68,15 +68,25 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                 kosdaq_df = get_all_market_data("1")
                 total_market_df = pd.concat([kospi_df, kosdaq_df], ignore_index=True)
                 
-                # 사용자가 입력한 종목명만 필터링하는 핵심 로직
-                # 데이터프레임 내 종목명 양 끝 공백 제거 후 비교
+                # 데이터프레임 내 종목명 양 끝 공백 제거
                 total_market_df['종목명'] = total_market_df['종목명'].astype(str).str.strip()
+                
+                # 사용자가 입력한 종목명만 필터링하는 핵심 로직
                 filtered_result = total_market_df[total_market_df['종목명'].isin(target_stocks)].reset_index(drop=True)
                 
                 # 핵심단어(요청 컬럼)만 추출 및 정리
                 target_columns = ['종목명', '현재가', '시가총액']
                 available_columns = [col for col in target_columns if col in filtered_result.columns]
-                final_df = filtered_result[available_columns]
+                final_df = filtered_result[available_columns].copy()
+                
+                # [전처리] 돈 단위 변환 로직 (원, 억 원)
+                if '현재가' in final_df.columns:
+                    final_df['현재가'] = pd.to_numeric(final_df['현재가'].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
+                    final_df['현재가'] = final_df['현재가'].apply(lambda x: f"{x:,}원")
+                    
+                if '시가총액' in final_df.columns:
+                    final_df['시가총액'] = pd.to_numeric(final_df['시가총액'].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
+                    final_df['시가총액'] = final_df['시가총액'].apply(lambda x: f"{x:,}억 원")
                 
                 # 사용자가 입력했으나 네이버 상장판에서 매칭되지 않은 종목 보완 (예: 오타 등)
                 found_stocks = final_df['종목명'].tolist()
@@ -85,6 +95,14 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                 if missing_stocks:
                     missing_data = [{"종목명": missing, "현재가": "N/A (상장 미매칭)", "시가총액": "N/A"} for missing in missing_stocks]
                     final_df = pd.concat([final_df, pd.DataFrame(missing_data)], ignore_index=True)
+
+                # [핵심 변경] 사용자가 입력한 순서(target_stocks)대로 최종 결과 정렬하기
+                # 종목명 컬럼을 사용자가 입력한 순서의 인덱스 기준으로 카테고리화하여 정렬합니다.
+                final_df['종목명'] = pd.Categorical(final_df['종목명'], categories=target_stocks, ordered=True)
+                final_df = final_df.sort_values('종목명').reset_index(drop=True)
+                
+                # 카테고리 타입을 일반 문자열로 다시 되돌려주기 (데이터프레임 출력 오류 방지)
+                final_df['종목명'] = final_df['종목명'].astype(str)
 
                 # 결과 출력
                 st.subheader(f"✅ 분석 결과 (총 {len(final_df)}개 종목 완료)")
@@ -95,7 +113,7 @@ if st.button("🚀 금융 정보 수집 시작", type="primary"):
                 st.download_button(
                     label="📥 분석 결과 CSV 다운로드",
                     data=csv,
-                    file_name="naver_finance_extracted.csv",
+                    file_name="naver_finance_ordered.csv",
                     mime='text/csv',
                 )
                 
